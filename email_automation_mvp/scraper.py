@@ -56,15 +56,50 @@ def find_emails_and_links(url, base_domain):
 def scrape_website(base_url):
     """
     Crawls a website starting from the base_url to find email addresses.
+    Prioritizes specific pages like 'contact' and 'about'. If emails are found
+    on these pages, it returns them. Otherwise, it proceeds to a general crawl.
     """
     original_domain = urlparse(base_url).netloc
     print(f"Scraping: {base_url} (Domain: {original_domain})")
 
-    urls_to_visit = deque([base_url])
-    visited_urls = set([base_url])
-    found_data = [] # List of {'email': email, 'source': url}
-
+    found_data = []
+    visited_urls = set()
     pages_crawled = 0
+
+    # 1. Priority Scan
+    print("  -> Checking priority pages...")
+    priority_paths = ['/contact', '/contact-us', '/about-us', '/about', '/about-me']
+    # Use a set to auto-deduplicate URLs (e.g. if base_url is example.com/)
+    priority_urls = {urljoin(base_url, path) for path in priority_paths}
+    priority_urls.add(base_url) # Also check the base URL itself
+
+    links_for_general_crawl = set()
+
+    for url in priority_urls:
+        if url not in visited_urls and pages_crawled < MAX_PAGES_PER_DOMAIN:
+            print(f"  Visiting priority page: {url}")
+            visited_urls.add(url)
+            pages_crawled += 1
+            emails, new_links = find_emails_and_links(url, original_domain)
+            for email in emails:
+                found_data.append({'email': email, 'source': url})
+            links_for_general_crawl.update(new_links)
+
+    # 2. If emails were found on ANY priority page, return all of them and stop.
+    if found_data:
+        print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl for this domain.")
+        return found_data
+
+    # 3. If no emails were found, proceed with a general crawl.
+    print("  -> No emails on priority pages. Starting general crawl...")
+    urls_to_visit = deque()
+
+    # Seed the queue with links found during the priority scan.
+    for link in links_for_general_crawl:
+        if link not in visited_urls:
+            urls_to_visit.append(link)
+            visited_urls.add(link) # Mark as visited when adding to queue to avoid duplicates
+
     while urls_to_visit and pages_crawled < MAX_PAGES_PER_DOMAIN:
         current_url = urls_to_visit.popleft()
         pages_crawled += 1
