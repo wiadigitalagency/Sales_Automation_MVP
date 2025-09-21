@@ -5,89 +5,181 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from collections import deque
+from playwright.sync_api import sync_playwright, Error as PlaywrightError
 
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 URL_FILE = os.path.join(SCRIPT_DIR, 'urls.txt')
 OUTPUT_FILE = os.path.join(SCRIPT_DIR, 'results.csv')
-MAX_PAGES_PER_DOMAIN = 20  # Limit the number of pages to crawl per website
+MAX_PAGES_PER_DOMAIN = 20
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+    'Accept-Language': 'en-US,en;q=0.9',
 }
 EMAIL_REGEX = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
 
-def find_emails_and_links(url, base_domain):
-    """
-    Fetches a single page, scrapes it for email addresses and internal links.
-    Returns a tuple: (list of found emails, list of internal links).
-    """
+def decode_cf_email(encoded_string):
+    try:
+        r = int(encoded_string[:2], 16)
+        email = ''.join([chr(int(encoded_string[i:i+2], 16) ^ r) for i in range(2, len(encoded_string), 2)])
+        return email
+    except (ValueError, TypeError):
+        return None
+
+def parse_html_for_emails_and_links(html_content, url):
     emails = set()
     links = set()
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
+    base_domain = urlparse(url).netloc
+    soup = BeautifulSoup(html_content, 'lxml')
 
-        # Check if content is HTML before parsing
-        if 'text/html' not in response.headers.get('Content-Type', ''):
-            return [], []
+    # 1. Find emails with regex
+    found_emails = re.findall(EMAIL_REGEX, soup.get_text())
+    for email in found_emails:
+        if not email.endswith(('.png', '.jpg', '.gif', '.jpeg', '.css', '.js')):
+            emails.add(email)
 
-        soup = BeautifulSoup(response.text, 'lxml')
+    # 2. Find and decode Cloudflare-protected emails
+    for cf_email_tag in soup.find_all('a', href=lambda href: href and '/cdn-cgi/l/email-protection' in href):
+        encoded_string = cf_email_tag['href'].split('#')[-1]
+        decoded_email = decode_cf_email(encoded_string)
+        if decoded_email:
+            emails.add(decoded_email)
+    for cf_span in soup.select('span.__cf_email__'):
+        encoded_string = cf_span.get('data-cfemail')
+        if encoded_string:
+            decoded_email = decode_cf_email(encoded_string)
+            if decoded_email:
+                emails.add(decoded_email)
 
-        # Find emails
-        found_emails = re.findall(EMAIL_REGEX, soup.get_text())
-        for email in found_emails:
-            if not email.endswith(('.png', '.jpg', '.gif', '.jpeg', '.css', '.js')):
-                emails.add(email)
-
-        # Find internal links
-        for a_tag in soup.find_all('a', href=True):
-            link = urljoin(url, a_tag['href'])
-            # Clean link (remove fragment)
-            link = link.split('#')[0]
-            # Check if it's a valid, same-domain link
-            if urlparse(link).netloc == base_domain and link.startswith('http'):
-                links.add(link)
-
-    except requests.RequestException as e:
-        print(f"   -> Could not access {url}. Error: {e}")
+    # 3. Find internal links
+    for a_tag in soup.find_all('a', href=True):
+        link = urljoin(url, a_tag['href'])
+        link = link.split('#')[0]
+        if urlparse(link).netloc == base_domain and link.startswith('http'):
+            links.add(link)
 
     return list(emails), list(links)
 
-def scrape_website(base_url):
-    """
-    Crawls a website starting from the base_url to find email addresses.
-    """
+def scrape_website(base_url, playwright_browser):
     original_domain = urlparse(base_url).netloc
     print(f"Scraping: {base_url} (Domain: {original_domain})")
 
-    urls_to_visit = deque([base_url])
-    visited_urls = set([base_url])
-    found_data = [] # List of {'email': email, 'source': url}
+    # --- Mode Detection ---
+    print("  -> Checking site type (Simple vs JavaScript-heavy)...")
+    use_playwright = False
+    try:
+        with requests.Session() as initial_session:
+            initial_session.headers.update(HEADERS)
+            response = initial_session.get(base_url, timeout=10)
+            response.raise_for_status()
+            html_content = response.text
+            initial_emails, initial_links = parse_html_for_emails_and_links(html_content, base_url)
 
+            if not initial_links:
+                print("  -> No links found with simple request. Switching to Advanced Mode (Playwright).")
+                use_playwright = True
+            elif not initial_emails and "email-protection" in html_content:
+                print("  -> Email obfuscation detected and no emails found. Switching to Advanced Mode (Playwright).")
+                use_playwright = True
+            else:
+                print("  -> Simple site detected. Using fast mode.")
+    except requests.RequestException as e:
+        print(f"  -> Initial check failed: {e}. Assuming advanced site.")
+        use_playwright = True
+
+    # --- Start Crawl ---
+    found_data = []
+    visited_urls = set()
     pages_crawled = 0
-    while urls_to_visit and pages_crawled < MAX_PAGES_PER_DOMAIN:
-        current_url = urls_to_visit.popleft()
-        pages_crawled += 1
 
-        print(f"  [{pages_crawled}/{MAX_PAGES_PER_DOMAIN}] Visiting: {current_url}")
+    session = requests.Session() if not use_playwright else None
+    if session:
+        session.headers.update(HEADERS)
 
-        emails, new_links = find_emails_and_links(current_url, original_domain)
+    page = playwright_browser.new_page() if use_playwright else None
 
-        for email in emails:
-            found_data.append({'email': email, 'source': current_url})
+    try:
+        # 1. Priority Scan
+        print("  -> Checking priority pages...")
+        priority_paths = ['/contact', '/contact-us', '/about-us', '/about', '/about-me']
+        priority_urls = {urljoin(base_url, path) for path in priority_paths}
+        priority_urls.add(base_url)
 
-        for link in new_links:
-            if link not in visited_urls:
-                visited_urls.add(link)
-                urls_to_visit.append(link)
+        links_for_general_crawl = set()
+
+        for url in priority_urls:
+            if url in visited_urls or pages_crawled >= MAX_PAGES_PER_DOMAIN:
+                continue
+
+            print(f"  Visiting priority page: {url}")
+            visited_urls.add(url)
+            pages_crawled += 1
+
+            try:
+                html_content = ""
+                if use_playwright:
+                    page.goto(url, timeout=20000)
+                    html_content = page.content()
+                else:
+                    response = session.get(url, timeout=10)
+                    response.raise_for_status()
+                    html_content = response.text
+
+                emails, new_links = parse_html_for_emails_and_links(html_content, url)
+                for email in emails:
+                    found_data.append({'email': email, 'source': url})
+                links_for_general_crawl.update(new_links)
+            except (requests.RequestException, PlaywrightError) as e:
+                print(f"   -> Could not access {url}. Error: {e}")
+
+        # 2. Conditional continuation
+        if found_data:
+            print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl.")
+            return found_data
+
+        # 3. General Crawl
+        print("  -> No emails on priority pages. Starting general crawl...")
+        urls_to_visit = deque(links_for_general_crawl - visited_urls)
+
+        while urls_to_visit and pages_crawled < MAX_PAGES_PER_DOMAIN:
+            current_url = urls_to_visit.popleft()
+            if current_url in visited_urls:
+                continue
+
+            print(f"  [{pages_crawled + 1}/{MAX_PAGES_PER_DOMAIN}] Visiting: {current_url}")
+            visited_urls.add(current_url)
+            pages_crawled += 1
+
+            try:
+                html_content = ""
+                if use_playwright:
+                    page.goto(current_url, timeout=20000)
+                    html_content = page.content()
+                else:
+                    response = session.get(current_url, timeout=10)
+                    response.raise_for_status()
+                    html_content = response.text
+
+                emails, new_links = parse_html_for_emails_and_links(html_content, current_url)
+                for email in emails:
+                    found_data.append({'email': email, 'source': current_url})
+
+                for link in new_links:
+                    if link not in visited_urls:
+                        urls_to_visit.append(link)
+            except (requests.RequestException, PlaywrightError) as e:
+                print(f"   -> Could not access {current_url}. Error: {e}")
+
+    finally:
+        if page:
+            page.close()
+        if session:
+            session.close()
 
     return found_data
 
 def main():
-    """
-    Main function to run the scraper.
-    Reads URLs, crawls them, and saves results to a CSV.
-    """
     if not os.path.exists(URL_FILE):
         print(f"Error: Input file '{URL_FILE}' not found.")
         return
@@ -101,36 +193,36 @@ def main():
 
     print(f"Found {len(urls)} base URLs to process.")
 
-    all_results = []
-    for base_url in urls:
-        # Ensure base_url has a scheme
-        if not urlparse(base_url).scheme:
-            base_url = 'https://' + base_url
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        all_results = []
+        for base_url in urls:
+            if not urlparse(base_url).scheme:
+                base_url = 'https://' + base_url
 
-        scraped_data = scrape_website(base_url)
+            scraped_data = scrape_website(base_url, browser)
 
-        if scraped_data:
-            # Use a set to store unique email-source pairs for this website
-            unique_emails_for_site = set()
-            for item in scraped_data:
-                # Add the base website URL to the results
-                if (item['email']) not in unique_emails_for_site:
-                    all_results.append({
-                        'Website': urlparse(base_url).netloc,
-                        'Found_Email': item['email'],
-                        'Source_URL': item['source']
-                    })
-                    unique_emails_for_site.add(item['email'])
-        else:
-            all_results.append({
-                'Website': urlparse(base_url).netloc,
-                'Found_Email': 'No email found',
-                'Source_URL': base_url
-            })
+            if scraped_data:
+                unique_emails_for_site = set()
+                for item in scraped_data:
+                    if (item['email']) not in unique_emails_for_site:
+                        all_results.append({
+                            'Website': urlparse(base_url).netloc,
+                            'Found_Email': item['email'],
+                            'Source_URL': item['source']
+                        })
+                        unique_emails_for_site.add(item['email'])
+            else:
+                all_results.append({
+                    'Website': urlparse(base_url).netloc,
+                    'Found_Email': 'No email found',
+                    'Source_URL': base_url
+                })
+
+        browser.close()
 
     if all_results:
         df = pd.DataFrame(all_results)
-        # Remove duplicate emails found across different source URLs for the same website
         df.drop_duplicates(subset=['Website', 'Found_Email'], inplace=True)
         df.to_csv(OUTPUT_FILE, index=False)
         print(f"\nScraping complete. Results saved to '{OUTPUT_FILE}'.")
