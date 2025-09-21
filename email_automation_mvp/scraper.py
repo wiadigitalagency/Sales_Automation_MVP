@@ -12,19 +12,24 @@ URL_FILE = os.path.join(SCRIPT_DIR, 'urls.txt')
 OUTPUT_FILE = os.path.join(SCRIPT_DIR, 'results.csv')
 MAX_PAGES_PER_DOMAIN = 20  # Limit the number of pages to crawl per website
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
 }
 EMAIL_REGEX = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
 
-def find_emails_and_links(url, base_domain):
+def find_emails_and_links(session, url, base_domain):
     """
-    Fetches a single page, scrapes it for email addresses and internal links.
+    Fetches a single page using a session, scrapes for emails and internal links.
     Returns a tuple: (list of found emails, list of internal links).
     """
     emails = set()
     links = set()
     try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
+        response = session.get(url, timeout=10)
         response.raise_for_status()
 
         # Check if content is HTML before parsing
@@ -56,30 +61,63 @@ def find_emails_and_links(url, base_domain):
 def scrape_website(base_url):
     """
     Crawls a website starting from the base_url to find email addresses.
+    Uses a session to handle cookies and headers, and prioritizes specific pages.
     """
     original_domain = urlparse(base_url).netloc
     print(f"Scraping: {base_url} (Domain: {original_domain})")
 
-    urls_to_visit = deque([base_url])
-    visited_urls = set([base_url])
-    found_data = [] # List of {'email': email, 'source': url}
-
+    found_data = []
+    visited_urls = set()
     pages_crawled = 0
-    while urls_to_visit and pages_crawled < MAX_PAGES_PER_DOMAIN:
-        current_url = urls_to_visit.popleft()
-        pages_crawled += 1
 
-        print(f"  [{pages_crawled}/{MAX_PAGES_PER_DOMAIN}] Visiting: {current_url}")
+    with requests.Session() as session:
+        session.headers.update(HEADERS)
 
-        emails, new_links = find_emails_and_links(current_url, original_domain)
+        # 1. Priority Scan
+        print("  -> Checking priority pages...")
+        priority_paths = ['/contact', '/contact-us', '/about-us', '/about', '/about-me']
+        priority_urls = {urljoin(base_url, path) for path in priority_paths}
+        priority_urls.add(base_url)
 
-        for email in emails:
-            found_data.append({'email': email, 'source': current_url})
+        links_for_general_crawl = set()
 
-        for link in new_links:
+        for url in priority_urls:
+            if url not in visited_urls and pages_crawled < MAX_PAGES_PER_DOMAIN:
+                print(f"  Visiting priority page: {url}")
+                visited_urls.add(url)
+                pages_crawled += 1
+                emails, new_links = find_emails_and_links(session, url, original_domain)
+                for email in emails:
+                    found_data.append({'email': email, 'source': url})
+                links_for_general_crawl.update(new_links)
+
+        # 2. If emails found on priority pages, stop and return them.
+        if found_data:
+            print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl.")
+            return found_data
+
+        # 3. If no emails found, proceed with a general crawl.
+        print("  -> No emails on priority pages. Starting general crawl...")
+        urls_to_visit = deque()
+        for link in links_for_general_crawl:
             if link not in visited_urls:
-                visited_urls.add(link)
                 urls_to_visit.append(link)
+                visited_urls.add(link)
+
+        while urls_to_visit and pages_crawled < MAX_PAGES_PER_DOMAIN:
+            current_url = urls_to_visit.popleft()
+            pages_crawled += 1
+
+            print(f"  [{pages_crawled}/{MAX_PAGES_PER_DOMAIN}] Visiting: {current_url}")
+            emails, new_links = find_emails_and_links(session, current_url, original_domain)
+
+            for email in emails:
+                found_data.append({'email': email, 'source': current_url})
+
+            for link in new_links:
+                if link not in visited_urls:
+                    visited_urls.add(link)
+                    urls_to_visit.append(link)
 
     return found_data
 
