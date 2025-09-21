@@ -61,6 +61,71 @@ def parse_html_for_emails_and_links(html_content, url):
 
     return list(emails), list(links)
 
+def get_sitemap_urls(base_url, session):
+    """
+    Finds and parses a sitemap to extract all unique URLs.
+    Handles sitemap indexes and recursively fetches nested sitemaps.
+    """
+    sitemap_urls = set()
+    urls_to_parse = set()
+    parsed_sitemaps = set()
+
+    # 1. Check robots.txt for Sitemap directive
+    robots_url = urljoin(base_url, '/robots.txt')
+    try:
+        response = session.get(robots_url, timeout=10)
+        if response.status_code == 200:
+            for line in response.text.splitlines():
+                if line.lower().startswith('sitemap:'):
+                    urls_to_parse.add(line.split(':', 1)[1].strip())
+    except requests.RequestException as e:
+        print(f"  -> Could not fetch or read robots.txt: {e}")
+
+    # 2. If not in robots.txt, check common sitemap location
+    if not urls_to_parse:
+        urls_to_parse.add(urljoin(base_url, '/sitemap.xml'))
+
+    # 3. Parse sitemaps (can be recursive for sitemap indexes)
+    while urls_to_parse:
+        sitemap_url = urls_to_parse.pop()
+        if sitemap_url in parsed_sitemaps:
+            continue
+
+        print(f"  -> Parsing sitemap: {sitemap_url}")
+        parsed_sitemaps.add(sitemap_url)
+
+        try:
+            response = session.get(sitemap_url, timeout=10)
+            if response.status_code != 200:
+                continue
+
+            soup = BeautifulSoup(response.content, 'lxml-xml')
+
+            # Check for sitemap index
+            sitemap_tags = soup.find_all('sitemap')
+            if sitemap_tags:
+                for tag in sitemap_tags:
+                    loc = tag.find('loc')
+                    if loc:
+                        urls_to_parse.add(loc.text.strip())
+            else:
+                # Standard sitemap
+                url_tags = soup.find_all('url')
+                for tag in url_tags:
+                    loc = tag.find('loc')
+                    if loc:
+                        sitemap_urls.add(loc.text.strip())
+
+        except requests.RequestException as e:
+            print(f"  -> Failed to fetch or parse sitemap {sitemap_url}: {e}")
+        except Exception as e:
+            print(f"  -> An unexpected error occurred while parsing {sitemap_url}: {e}")
+
+
+    print(f"  -> Found {len(sitemap_urls)} URLs in sitemap(s).")
+    return list(sitemap_urls)
+
+
 def scrape_website(base_url, playwright_browser):
     original_domain = urlparse(base_url).netloc
     print(f"Scraping: {base_url} (Domain: {original_domain})")
@@ -135,16 +200,36 @@ def scrape_website(base_url, playwright_browser):
 
         # 2. Conditional continuation
         if found_data:
-            print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl.")
+            print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl for this domain.")
             return found_data
 
-        # 3. General Crawl
-        print("  -> No emails on priority pages. Starting general crawl...")
-        urls_to_visit = deque(links_for_general_crawl - visited_urls)
+        # 3. Sitemap Crawl
+        print("  -> No emails on priority pages. Attempting sitemap crawl...")
+        sitemap_urls = []
+        if not use_playwright: # Sitemap logic relies on requests
+            sitemap_urls = get_sitemap_urls(base_url, session)
+        else:
+            print("  -> Skipping sitemap check in Playwright mode (for now).")
 
+        urls_to_visit_set = set(sitemap_urls) if sitemap_urls else links_for_general_crawl
+        urls_to_visit = deque(list(urls_to_visit_set - visited_urls)) # Use list to make it orderable
+
+        if sitemap_urls:
+            print(f"  -> Proceeding with {len(urls_to_visit)} URLs from sitemap.")
+        else:
+            print("  -> No sitemap found or parsed. Proceeding with general link crawl...")
+
+
+        # 4. Main Crawl (unified for sitemap or general links)
         while urls_to_visit and pages_crawled < MAX_PAGES_PER_DOMAIN:
             current_url = urls_to_visit.popleft()
             if current_url in visited_urls:
+                continue
+
+            # Ensure we only crawl pages within the original domain
+            current_netloc = urlparse(current_url).netloc.replace('www.', '')
+            normalized_original_domain = original_domain.replace('www.', '')
+            if current_netloc != normalized_original_domain:
                 continue
 
             print(f"  [{pages_crawled + 1}/{MAX_PAGES_PER_DOMAIN}] Visiting: {current_url}")
@@ -163,11 +248,16 @@ def scrape_website(base_url, playwright_browser):
 
                 emails, new_links = parse_html_for_emails_and_links(html_content, current_url)
                 for email in emails:
-                    found_data.append({'email': email, 'source': current_url})
+                    # Add to found_data to check for early exit
+                    if email not in [d.get('email') for d in found_data]:
+                         found_data.append({'email': email, 'source': current_url})
 
-                for link in new_links:
-                    if link not in visited_urls:
-                        urls_to_visit.append(link)
+                # In sitemap mode, we don't add new links to the queue
+                if not sitemap_urls:
+                    for link in new_links:
+                        if link not in visited_urls:
+                            urls_to_visit.append(link)
+
             except (requests.RequestException, PlaywrightError) as e:
                 print(f"   -> Could not access {current_url}. Error: {e}")
 
