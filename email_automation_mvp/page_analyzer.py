@@ -189,3 +189,33 @@ def analyze_page_content(html_content, url):
         print(f"  -> Found {len(contacts)} potential contact(s) on {url}")
 
     return contacts
+
+def parse_autoresponse_email(email_text_content):
+    """
+    Parses the raw text of an email autoresponse to find the sender's email.
+    This is a helper utility for the semi-automated process of capturing email
+    formats by submitting a contact form and analyzing the reply.
+
+    Usage:
+    1. Manually submit a contact form on the target website.
+    2. When the auto-reply arrives, copy its full raw content (including headers).
+    3. Pass the content to this function.
+
+    Args:
+        email_text_content (str): The full raw text of the email.
+
+    Returns:
+        list: A list of unique email addresses found in the 'From' or 'Reply-To' headers.
+    """
+    emails = []
+    # Look for 'From:' or 'Reply-To:' lines and extract the email
+    for line in email_text_content.splitlines():
+        if line.lower().startswith('from:') or line.lower().startswith('reply-to:'):
+            found = _extract_emails_from_text(line)
+            if found:
+                emails.extend(found)
+
+    if emails:
+        print(f"  -> Found potential contact email(s) in autoresponse: {list(set(emails))}")
+
+    return list(set(emails))
