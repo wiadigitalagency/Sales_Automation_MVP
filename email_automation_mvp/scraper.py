@@ -7,6 +7,7 @@ from urllib.parse import urljoin, urlparse
 from collections import deque
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
 from file_processor import process_file_url
+from page_analyzer import analyze_page_content
 
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -288,6 +289,11 @@ def scrape_website(base_url, playwright_browser):
                 emails, page_links, file_links = parse_html_for_emails_and_links(html_content, url)
                 for email in emails:
                     found_data.append({'email': email, 'name': '', 'source': url})
+
+                # Analyze content for specific contact types (blog, press, etc.)
+                specialized_contacts = analyze_page_content(html_content, url)
+                found_data.extend(specialized_contacts)
+
                 links_for_general_crawl.update(page_links)
 
                 # Process file links found on priority page
@@ -354,6 +360,10 @@ def scrape_website(base_url, playwright_browser):
                 emails, page_links, file_links = parse_html_for_emails_and_links(html_content, current_url)
                 for email in emails:
                     found_data.append({'email': email, 'name': '', 'source': current_url})
+
+                # Analyze content for specific contact types (blog, press, etc.)
+                specialized_contacts = analyze_page_content(html_content, current_url)
+                found_data.extend(specialized_contacts)
 
                 # Process file links found on this page
                 for file_url in file_links:
