@@ -3,3 +3,7 @@ beautifulsoup4
 pandas
 lxml
 playwright
+pdfminer.six
+python-docx
+python-pptx
+spacy
