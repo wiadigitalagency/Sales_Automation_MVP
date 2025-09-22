@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from collections import deque
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
+from file_processor import process_file_url
 
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,9 +30,11 @@ def decode_cf_email(encoded_string):
 
 def parse_html_for_emails_and_links(html_content, url):
     emails = set()
-    links = set()
+    page_links = set()
+    file_links = set()
     base_domain = urlparse(url).netloc
     soup = BeautifulSoup(html_content, 'lxml')
+    file_extensions = ['.pdf', '.docx', '.ppt', '.pptx']
 
     # 1. Find emails with regex
     found_emails = re.findall(EMAIL_REGEX, soup.get_text())
@@ -52,14 +55,22 @@ def parse_html_for_emails_and_links(html_content, url):
             if decoded_email:
                 emails.add(decoded_email)
 
-    # 3. Find internal links
+    # 3. Find internal page links and document links
     for a_tag in soup.find_all('a', href=True):
         link = urljoin(url, a_tag['href'])
         link = link.split('#')[0]
-        if urlparse(link).netloc == base_domain and link.startswith('http'):
-            links.add(link)
 
-    return list(emails), list(links)
+        if not link.startswith('http'):
+            continue
+
+        # Check if the link has a file extension for documents
+        if any(link.lower().endswith(ext) for ext in file_extensions):
+            file_links.add(link)
+        # Check if it's an internal page link to the same domain
+        elif urlparse(link).netloc == base_domain:
+            page_links.add(link)
+
+    return list(emails), list(page_links), list(file_links)
 
 def get_sitemap_urls(base_url, session=None, browser=None):
     """
@@ -193,15 +204,16 @@ def scrape_website(base_url, playwright_browser):
     # --- Mode Detection ---
     print("  -> Checking site type (Simple vs JavaScript-heavy)...")
     use_playwright = False
+    initial_file_links = []
     try:
         with requests.Session() as initial_session:
             initial_session.headers.update(HEADERS)
             response = initial_session.get(base_url, timeout=10)
             response.raise_for_status()
             html_content = response.text
-            initial_emails, initial_links = parse_html_for_emails_and_links(html_content, base_url)
+            initial_emails, initial_links, initial_file_links = parse_html_for_emails_and_links(html_content, base_url)
 
-            if not initial_links:
+            if not initial_links and not initial_file_links:
                 print("  -> No links found with simple request. Switching to Advanced Mode (Playwright).")
                 use_playwright = True
             elif not initial_emails and "email-protection" in html_content:
@@ -217,6 +229,7 @@ def scrape_website(base_url, playwright_browser):
     found_data = []
     visited_urls = set()
     pages_crawled = 0
+    processed_file_urls = set()
 
     session = requests.Session() if not use_playwright else None
     if session:
@@ -224,6 +237,15 @@ def scrape_website(base_url, playwright_browser):
 
     page = playwright_browser.new_page() if use_playwright else None
     priority_urls = set()
+
+    # Process any file links found during mode detection
+    for file_url in initial_file_links:
+        if file_url not in processed_file_urls:
+            file_emails, file_names = process_file_url(file_url)
+            names_str = ", ".join(file_names)
+            for email in file_emails:
+                found_data.append({'email': email, 'name': names_str, 'source': file_url})
+            processed_file_urls.add(file_url)
 
     try:
         # --- Homepage Fetch and Priority Link Discovery ---
@@ -263,16 +285,27 @@ def scrape_website(base_url, playwright_browser):
                     response.raise_for_status()
                     html_content = response.text
 
-                emails, new_links = parse_html_for_emails_and_links(html_content, url)
+                emails, page_links, file_links = parse_html_for_emails_and_links(html_content, url)
                 for email in emails:
-                    found_data.append({'email': email, 'source': url})
-                links_for_general_crawl.update(new_links)
+                    found_data.append({'email': email, 'name': '', 'source': url})
+                links_for_general_crawl.update(page_links)
+
+                # Process file links found on priority page
+                for file_url in file_links:
+                    if file_url not in processed_file_urls:
+                        file_emails, file_names = process_file_url(file_url)
+                        names_str = ", ".join(file_names)
+                        for email in file_emails:
+                            found_data.append({'email': email, 'name': names_str, 'source': file_url})
+                        processed_file_urls.add(file_url)
+
             except (requests.RequestException, PlaywrightError) as e:
                 print(f"   -> Could not access {url}. Error: {e}")
 
         # 2. Conditional continuation
-        if found_data:
-            print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl for this domain.")
+        # Check for emails before continuing to full crawl
+        if any(item['email'] for item in found_data):
+            print(f"  -> Found {len([item for item in found_data if item['email']])} email(s) on priority pages. Halting crawl for this domain.")
             return found_data
 
         # 3. Sitemap Crawl
@@ -318,15 +351,22 @@ def scrape_website(base_url, playwright_browser):
                     response.raise_for_status()
                     html_content = response.text
 
-                emails, new_links = parse_html_for_emails_and_links(html_content, current_url)
+                emails, page_links, file_links = parse_html_for_emails_and_links(html_content, current_url)
                 for email in emails:
-                    # Add to found_data to check for early exit
-                    if email not in [d.get('email') for d in found_data]:
-                         found_data.append({'email': email, 'source': current_url})
+                    found_data.append({'email': email, 'name': '', 'source': current_url})
+
+                # Process file links found on this page
+                for file_url in file_links:
+                    if file_url not in processed_file_urls:
+                        file_emails, file_names = process_file_url(file_url)
+                        names_str = ", ".join(file_names)
+                        for email in file_emails:
+                            found_data.append({'email': email, 'name': names_str, 'source': file_url})
+                        processed_file_urls.add(file_url)
 
                 # In sitemap mode, we don't add new links to the queue
                 if not sitemap_urls:
-                    for link in new_links:
+                    for link in page_links:
                         if link not in visited_urls:
                             urls_to_visit.append(link)
 
@@ -365,26 +405,40 @@ def main():
             scraped_data = scrape_website(base_url, browser)
 
             if scraped_data:
-                unique_emails_for_site = set()
                 for item in scraped_data:
-                    if (item['email']) not in unique_emails_for_site:
-                        all_results.append({
-                            'Website': urlparse(base_url).netloc,
-                            'Found_Email': item['email'],
-                            'Source_URL': item['source']
-                        })
-                        unique_emails_for_site.add(item['email'])
+                    all_results.append({
+                        'Website': urlparse(base_url).netloc,
+                        'Found_Email': item['email'],
+                        'Found_Name': item.get('name', ''),
+                        'Source_URL': item['source']
+                    })
             else:
                 all_results.append({
                     'Website': urlparse(base_url).netloc,
                     'Found_Email': 'No email found',
+                    'Found_Name': '',
                     'Source_URL': base_url
                 })
 
         browser.close()
 
     if all_results:
+        # Define column order for the CSV
+        columns = ['Website', 'Found_Email', 'Found_Name', 'Source_URL']
         df = pd.DataFrame(all_results)
+
+        # Guard against empty dataframe if all results were "No email found"
+        if 'Found_Name' not in df.columns:
+            df['Found_Name'] = ''
+
+        # Reorder columns to ensure 'Found_Name' is included correctly
+        df = df[columns]
+
+        # Prioritize entries with names by sorting before dropping duplicates
+        df['name_len'] = df['Found_Name'].str.len()
+        df.sort_values(by='name_len', ascending=False, inplace=True)
+        df.drop(columns=['name_len'], inplace=True)
+
         df.drop_duplicates(subset=['Website', 'Found_Email'], inplace=True)
         df.to_csv(OUTPUT_FILE, index=False)
         print(f"\nScraping complete. Results saved to '{OUTPUT_FILE}'.")
