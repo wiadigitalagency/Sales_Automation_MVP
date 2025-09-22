@@ -11,7 +11,7 @@ from playwright.sync_api import sync_playwright, Error as PlaywrightError
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 URL_FILE = os.path.join(SCRIPT_DIR, 'urls.txt')
 OUTPUT_FILE = os.path.join(SCRIPT_DIR, 'results.csv')
-MAX_PAGES_PER_DOMAIN = 20
+MAX_PAGES_PER_DOMAIN = 100
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
@@ -61,10 +61,11 @@ def parse_html_for_emails_and_links(html_content, url):
 
     return list(emails), list(links)
 
-def get_sitemap_urls(base_url, session):
+def get_sitemap_urls(base_url, session=None, browser=None):
     """
     Finds and parses a sitemap to extract all unique URLs.
     Handles sitemap indexes and recursively fetches nested sitemaps.
+    Works with both requests.Session and Playwright Browser.
     """
     sitemap_urls = set()
     urls_to_parse = set()
@@ -73,12 +74,27 @@ def get_sitemap_urls(base_url, session):
     # 1. Check robots.txt for Sitemap directive
     robots_url = urljoin(base_url, '/robots.txt')
     try:
-        response = session.get(robots_url, timeout=10)
-        if response.status_code == 200:
-            for line in response.text.splitlines():
+        content = ""
+        status = 0
+        if browser:
+            page = browser.new_page()
+            try:
+                response = page.goto(robots_url, timeout=10000, wait_until='domcontentloaded')
+                if response:
+                    content = page.content()
+                    status = response.status
+            finally:
+                page.close()
+        elif session:
+            response = session.get(robots_url, timeout=10)
+            content = response.text
+            status = response.status_code
+
+        if status == 200:
+            for line in content.splitlines():
                 if line.lower().startswith('sitemap:'):
                     urls_to_parse.add(line.split(':', 1)[1].strip())
-    except requests.RequestException as e:
+    except (requests.RequestException, PlaywrightError) as e:
         print(f"  -> Could not fetch or read robots.txt: {e}")
 
     # 2. If not in robots.txt, check common sitemap location
@@ -95,11 +111,26 @@ def get_sitemap_urls(base_url, session):
         parsed_sitemaps.add(sitemap_url)
 
         try:
-            response = session.get(sitemap_url, timeout=10)
-            if response.status_code != 200:
+            content = b""
+            status = 0
+            if browser:
+                page = browser.new_page()
+                try:
+                    response = page.goto(sitemap_url, timeout=10000, wait_until='domcontentloaded')
+                    if response:
+                        content = page.content().encode('utf-8') # BeautifulSoup expects bytes for XML
+                        status = response.status
+                finally:
+                    page.close()
+            elif session:
+                response = session.get(sitemap_url, timeout=10)
+                content = response.content
+                status = response.status_code
+
+            if status != 200:
                 continue
 
-            soup = BeautifulSoup(response.content, 'lxml-xml')
+            soup = BeautifulSoup(content, 'lxml-xml')
 
             # Check for sitemap index
             sitemap_tags = soup.find_all('sitemap')
@@ -116,14 +147,43 @@ def get_sitemap_urls(base_url, session):
                     if loc:
                         sitemap_urls.add(loc.text.strip())
 
-        except requests.RequestException as e:
+        except (requests.RequestException, PlaywrightError) as e:
             print(f"  -> Failed to fetch or parse sitemap {sitemap_url}: {e}")
         except Exception as e:
             print(f"  -> An unexpected error occurred while parsing {sitemap_url}: {e}")
 
-
     print(f"  -> Found {len(sitemap_urls)} URLs in sitemap(s).")
     return list(sitemap_urls)
+
+
+def find_priority_links(html_content, base_url):
+    """
+    Parses HTML to find links that likely lead to contact, about, or team pages.
+    """
+    soup = BeautifulSoup(html_content, 'lxml')
+    priority_links = set()
+    keywords = [
+        'contact', 'about', 'team', 'career', 'jobs', 'support', 'help',
+        'press', 'media', 'news', 'impressum', 'legal', 'privacy',
+        'contact-us', 'about-us', 'our-team', 'get-in-touch',
+        'contacto', 'quienes-somos', 'equipo', 'carrera',
+        'kontakt', 'ueber-uns', 'über-uns',
+        'contato', 'sobre',
+        'contactez-nous', 'a-propos', 'equipe'
+    ]
+
+    for a_tag in soup.find_all('a', href=True):
+        href = a_tag['href'].lower()
+        link_text = a_tag.get_text().lower()
+
+        if any(keyword in href for keyword in keywords) or any(keyword in link_text for keyword in keywords):
+            full_url = urljoin(base_url, a_tag['href'])
+            # Basic validation to ensure it's a real link
+            if urlparse(full_url).scheme in ['http', 'https']:
+                priority_links.add(full_url)
+
+    print(f"  -> Found {len(priority_links)} potential priority pages from homepage.")
+    return list(priority_links)
 
 
 def scrape_website(base_url, playwright_browser):
@@ -163,87 +223,29 @@ def scrape_website(base_url, playwright_browser):
         session.headers.update(HEADERS)
 
     page = playwright_browser.new_page() if use_playwright else None
+    priority_urls = set()
 
     try:
+        # --- Homepage Fetch and Priority Link Discovery ---
+        homepage_html = ""
+        if use_playwright:
+            page.goto(base_url, timeout=20000)
+            homepage_html = page.content()
+        elif 'html_content' in locals(): # Use content from initial check if available
+            homepage_html = html_content
+        else: # Fetch if initial check was skipped
+            response = session.get(base_url, timeout=10)
+            response.raise_for_status()
+            homepage_html = response.text
+
+        priority_urls = set(find_priority_links(homepage_html, base_url))
+        priority_urls.add(base_url) # Ensure homepage is always scanned
+
         # 1. Priority Scan
         print("  -> Checking priority pages...")
-        priority_paths = [
-            # Core
-            '/contact', '/contact-us', '/about-us', '/about', '/about-me', '/team', '/company',
-            
-            # Index file variants
-            '/contact/index.html', '/about/index.html', '/team/index.html', '/company/index.html',
-            '/contact/index.php', '/about/index.php', '/team/index.php', '/company/index.php',
-            
-            # HTML direct
-            '/contact.html', '/contact-us.html', '/about.html', '/about-us.html',
-            '/team.html', '/company.html', '/team-us.html',
-            
-            # Support / Help sections
-            '/support', '/support/contact', '/support/help', '/help', '/help/contact',
-            '/customer-service', '/customer-service/contact',
-            
-            # People directories
-            '/staff', '/staff-directory', '/employee-directory', '/directory',
-            '/our-people', '/people', '/people/index.html',
-            '/key-people', '/leadership-team', '/executive-team',
-            
-            # Media / PR
-            '/press', '/press/contact', '/media', '/media/contact',
-            '/newsroom', '/newsroom/contact',
-            
-            # Careers / HR
-            '/careers', '/jobs', '/work-with-us', '/join-us',
-            '/hr', '/hr/contact', '/recruitment',
-            
-            # Nested company info
-            '/company-info', '/company-info.html', '/company-profile',
-            '/company-profile.html', '/about/company',
-            
-            # General reach-out
-            '/get-in-touch', '/reach-us', '/connect', '/connect-with-us',
-            
-            # Localized (Spanish)
-            '/contacto', '/contactenos', '/quienes-somos', '/empresa', '/sobre-nosotros',
-            
-            # Localized (German)
-            '/kontakt', '/ueber-uns', '/unternehmen',
-            
-            # Localized (Portuguese)
-            '/contato', '/fale-conosco', '/sobre', '/empresa',
-            
-            # Localized (French)
-            '/contactez-nous', '/a-propos', '/notre-equipe', '/societe',
-            
-            # Localized (Italian)
-            '/contatti', '/chi-siamo', '/la-nostra-storia',
-            
-            # Nested language dirs
-            '/en/contact', '/en/about', '/en/team', '/en/company',
-            '/es/contacto', '/es/nosotros', '/es/empresa',
-            '/pt/contato', '/pt/sobre', '/pt/empresa',
-            '/fr/contact', '/fr/a-propos', '/fr/equipe',
-            '/de/kontakt', '/de/unternehmen', '/de/team',
-            
-            # Misc info pages
-            '/info', '/information', '/company-information',
-            '/site-info', '/legal', '/impressum', '/disclaimer',
-            
-            # Investor / relations
-            '/investors', '/investors/contact', '/ir', '/ir/contact',
-            
-            # Privacy / compliance
-            '/privacy', '/privacy-policy/contact', '/gdpr-contact',
-            
-            # Partnerships / vendors
-            '/partners', '/partners/contact', '/vendors', '/vendors/contact']
-
-        priority_urls = {urljoin(base_url, path) for path in priority_paths}
-        priority_urls.add(base_url)
-
         links_for_general_crawl = set()
 
-        for url in priority_urls:
+        for url in sorted(list(priority_urls)):
             if url in visited_urls or pages_crawled >= MAX_PAGES_PER_DOMAIN:
                 continue
 
@@ -269,17 +271,17 @@ def scrape_website(base_url, playwright_browser):
                 print(f"   -> Could not access {url}. Error: {e}")
 
         # 2. Conditional continuation
-        # if found_data:
-        #     print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl for this domain.")
-        #     return found_data
+        if found_data:
+            print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl for this domain.")
+            return found_data
 
         # 3. Sitemap Crawl
         print("  -> No emails on priority pages. Attempting sitemap crawl...")
         sitemap_urls = []
-        if not use_playwright: # Sitemap logic relies on requests
-            sitemap_urls = get_sitemap_urls(base_url, session)
+        if use_playwright:
+            sitemap_urls = get_sitemap_urls(base_url, browser=playwright_browser)
         else:
-            print("  -> Skipping sitemap check in Playwright mode (for now).")
+            sitemap_urls = get_sitemap_urls(base_url, session=session)
 
         urls_to_visit_set = set(sitemap_urls) if sitemap_urls else links_for_general_crawl
         urls_to_visit = deque(list(urls_to_visit_set - visited_urls)) # Use list to make it orderable
