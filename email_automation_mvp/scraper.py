@@ -199,9 +199,9 @@ def scrape_website(base_url, playwright_browser):
                 print(f"   -> Could not access {url}. Error: {e}")
 
         # 2. Conditional continuation
-        if found_data:
-            print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl for this domain.")
-            return found_data
+        # if found_data:
+        #     print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl for this domain.")
+        #     return found_data
 
         # 3. Sitemap Crawl
         print("  -> No emails on priority pages. Attempting sitemap crawl...")
