@@ -152,6 +152,60 @@ def find_contacts_on_jobs_page(soup, url):
 
     return contacts
 
+def find_general_contacts(soup, url):
+    """
+    A general-purpose analyzer for finding contacts on any page.
+    - Prioritizes mailto links for reliable name-email association.
+    - Scans the entire page for any other emails and looks for nearby names.
+    """
+    contacts = []
+    processed_emails = set()
+
+    # 1. High-confidence extraction: Find all mailto links
+    mailto_links = soup.select('a[href^="mailto:"]')
+    for link in mailto_links:
+        email = link['href'].replace('mailto:', '').split('?')[0]
+        if email and email not in processed_emails:
+            name = link.get_text(" ", strip=True)
+            # Basic validation to ensure the link text could be a name
+            if name and '@' not in name:
+                contacts.append({'email': email, 'name': name, 'source': url})
+                processed_emails.add(email)
+
+    # 2. General scan: Find all other emails on the page
+    page_text = soup.get_text(" ", strip=True)
+    all_emails = _extract_emails_from_text(page_text)
+
+    remaining_emails = [email for email in all_emails if email not in processed_emails]
+
+    for email in remaining_emails:
+        # For remaining emails, try to find a nearby name
+        # Create a smaller search area around the email to find associated names
+        try:
+            email_index = page_text.find(email)
+            search_radius = 150  # characters
+            start = max(0, email_index - search_radius)
+            end = min(len(page_text), email_index + len(email) + search_radius)
+            context_text = page_text[start:end]
+
+            context_names = _extract_names_from_text(context_text)
+            if context_names:
+                # If names are found, associate the first one. This is a heuristic.
+                contacts.append({'email': email, 'name': context_names[0], 'source': url})
+            else:
+                # If no name is found, add the email without a name
+                contacts.append({'email': email, 'name': '', 'source': url})
+
+            processed_emails.add(email)
+
+        except Exception:
+            # If there's any issue finding the email index, just add the email
+            if email not in processed_emails:
+                 contacts.append({'email': email, 'name': '', 'source': url})
+                 processed_emails.add(email)
+
+    return contacts
+
 def analyze_page_content(html_content, url):
     """
     Orchestrator function that determines the page type and calls the appropriate analyzer.
@@ -166,27 +220,49 @@ def analyze_page_content(html_content, url):
         ('blog',): find_contacts_on_blog_page,
         ('case-study', 'testimonial', 'customer-story'): find_contacts_on_case_study_page,
         ('careers', 'jobs', 'join-us'): find_contacts_on_jobs_page,
+        ('contact', 'about', 'team'): find_general_contacts,
     }
 
-    # Use a single set to store all found contacts to avoid duplicates from different analyzers on the same page
+    # Use a single set to store all found contacts to avoid duplicates
     found_contacts_set = set()
 
+    # Helper function to add unique contacts
+    def add_unique_contacts(new_contacts):
+        for contact in new_contacts:
+            contact_tuple = (contact['email'], contact.get('name', ''))
+            if contact_tuple not in found_contacts_set:
+                contacts.append(contact)
+                found_contacts_set.add(contact_tuple)
+
+    # First, run specific analyzers based on URL keywords
+    specific_analyzer_run = False
     for keywords, analyzer_func in page_type_map.items():
         if any(keyword in url for keyword in keywords):
             print(f"  -> Analyzing page: {url} (Detected type: {keywords[0]})")
             try:
-                new_contacts = analyzer_func(soup, url)
-                for contact in new_contacts:
-                    # Use a tuple to make the dict hashable for the set
-                    contact_tuple = (contact['email'], contact.get('name', ''))
-                    if contact_tuple not in found_contacts_set:
-                        contacts.append(contact)
-                        found_contacts_set.add(contact_tuple)
+                # We run the specific analyzer, e.g., find_contacts_on_press_page
+                # Note: find_general_contacts is also in the map, so it runs here if keywords match
+                found = analyzer_func(soup, url)
+                add_unique_contacts(found)
+                specific_analyzer_run = True
             except Exception as e:
                 print(f"  -> Error analyzing {url} with {analyzer_func.__name__}: {e}")
 
+    # Now, always run the general analyzer as a fallback/addition,
+    # but only if it wasn't the one already run as a "specific" analyzer.
+    # This avoids running it twice on pages like /about-us.
+    is_general_page = any(keyword in url for keyword in ('contact', 'about', 'team'))
+    if not is_general_page:
+        print(f"  -> Running general analysis on: {url}")
+        try:
+            general_contacts = find_general_contacts(soup, url)
+            add_unique_contacts(general_contacts)
+        except Exception as e:
+            print(f"  -> Error during general analysis on {url}: {e}")
+
+
     if contacts:
-        print(f"  -> Found {len(contacts)} potential contact(s) on {url}")
+        print(f"  -> Found {len(contacts)} total potential contact(s) on {url}")
 
     return contacts
 
