@@ -126,6 +126,36 @@ def get_sitemap_urls(base_url, session):
     return list(sitemap_urls)
 
 
+def find_priority_links(html_content, base_url):
+    """
+    Parses HTML to find links that likely lead to contact, about, or team pages.
+    """
+    soup = BeautifulSoup(html_content, 'lxml')
+    priority_links = set()
+    keywords = [
+        'contact', 'about', 'team', 'career', 'jobs', 'support', 'help',
+        'press', 'media', 'news', 'impressum', 'legal', 'privacy',
+        'contact-us', 'about-us', 'our-team', 'get-in-touch',
+        'contacto', 'quienes-somos', 'equipo', 'carrera',
+        'kontakt', 'ueber-uns', 'über-uns',
+        'contato', 'sobre',
+        'contactez-nous', 'a-propos', 'equipe'
+    ]
+
+    for a_tag in soup.find_all('a', href=True):
+        href = a_tag['href'].lower()
+        link_text = a_tag.get_text().lower()
+
+        if any(keyword in href for keyword in keywords) or any(keyword in link_text for keyword in keywords):
+            full_url = urljoin(base_url, a_tag['href'])
+            # Basic validation to ensure it's a real link
+            if urlparse(full_url).scheme in ['http', 'https']:
+                priority_links.add(full_url)
+
+    print(f"  -> Found {len(priority_links)} potential priority pages from homepage.")
+    return list(priority_links)
+
+
 def scrape_website(base_url, playwright_browser):
     original_domain = urlparse(base_url).netloc
     print(f"Scraping: {base_url} (Domain: {original_domain})")
@@ -163,84 +193,26 @@ def scrape_website(base_url, playwright_browser):
         session.headers.update(HEADERS)
 
     page = playwright_browser.new_page() if use_playwright else None
+    priority_urls = set()
 
     try:
+        # --- Homepage Fetch and Priority Link Discovery ---
+        homepage_html = ""
+        if use_playwright:
+            page.goto(base_url, timeout=20000)
+            homepage_html = page.content()
+        elif 'html_content' in locals(): # Use content from initial check if available
+            homepage_html = html_content
+        else: # Fetch if initial check was skipped
+            response = session.get(base_url, timeout=10)
+            response.raise_for_status()
+            homepage_html = response.text
+
+        priority_urls = set(find_priority_links(homepage_html, base_url))
+        priority_urls.add(base_url) # Ensure homepage is always scanned
+
         # 1. Priority Scan
         print("  -> Checking priority pages...")
-        priority_paths = [
-            # Core
-            '/contact', '/contact-us', '/about-us', '/about', '/about-me', '/team', '/company',
-            
-            # Index file variants
-            '/contact/index.html', '/about/index.html', '/team/index.html', '/company/index.html',
-            '/contact/index.php', '/about/index.php', '/team/index.php', '/company/index.php',
-            
-            # HTML direct
-            '/contact.html', '/contact-us.html', '/about.html', '/about-us.html',
-            '/team.html', '/company.html', '/team-us.html',
-            
-            # Support / Help sections
-            '/support', '/support/contact', '/support/help', '/help', '/help/contact',
-            '/customer-service', '/customer-service/contact',
-            
-            # People directories
-            '/staff', '/staff-directory', '/employee-directory', '/directory',
-            '/our-people', '/people', '/people/index.html',
-            '/key-people', '/leadership-team', '/executive-team',
-            
-            # Media / PR
-            '/press', '/press/contact', '/media', '/media/contact',
-            '/newsroom', '/newsroom/contact',
-            
-            # Careers / HR
-            '/careers', '/jobs', '/work-with-us', '/join-us',
-            '/hr', '/hr/contact', '/recruitment',
-            
-            # Nested company info
-            '/company-info', '/company-info.html', '/company-profile',
-            '/company-profile.html', '/about/company',
-            
-            # General reach-out
-            '/get-in-touch', '/reach-us', '/connect', '/connect-with-us',
-            
-            # Localized (Spanish)
-            '/contacto', '/contactenos', '/quienes-somos', '/empresa', '/sobre-nosotros',
-            
-            # Localized (German)
-            '/kontakt', '/ueber-uns', '/unternehmen',
-            
-            # Localized (Portuguese)
-            '/contato', '/fale-conosco', '/sobre', '/empresa',
-            
-            # Localized (French)
-            '/contactez-nous', '/a-propos', '/notre-equipe', '/societe',
-            
-            # Localized (Italian)
-            '/contatti', '/chi-siamo', '/la-nostra-storia',
-            
-            # Nested language dirs
-            '/en/contact', '/en/about', '/en/team', '/en/company',
-            '/es/contacto', '/es/nosotros', '/es/empresa',
-            '/pt/contato', '/pt/sobre', '/pt/empresa',
-            '/fr/contact', '/fr/a-propos', '/fr/equipe',
-            '/de/kontakt', '/de/unternehmen', '/de/team',
-            
-            # Misc info pages
-            '/info', '/information', '/company-information',
-            '/site-info', '/legal', '/impressum', '/disclaimer',
-            
-            # Investor / relations
-            '/investors', '/investors/contact', '/ir', '/ir/contact',
-            
-            # Privacy / compliance
-            '/privacy', '/privacy-policy/contact', '/gdpr-contact',
-            
-            # Partnerships / vendors
-            '/partners', '/partners/contact', '/vendors', '/vendors/contact']
-
-        priority_urls = {urljoin(base_url, path) for path in priority_paths}
-        priority_urls.add(base_url)
-
         links_for_general_crawl = set()
 
         for url in priority_urls:
@@ -269,9 +241,9 @@ def scrape_website(base_url, playwright_browser):
                 print(f"   -> Could not access {url}. Error: {e}")
 
         # 2. Conditional continuation
-        # if found_data:
-        #     print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl for this domain.")
-        #     return found_data
+        if found_data:
+            print(f"  -> Found {len(found_data)} email(s) on priority pages. Halting crawl for this domain.")
+            return found_data
 
         # 3. Sitemap Crawl
         print("  -> No emails on priority pages. Attempting sitemap crawl...")
