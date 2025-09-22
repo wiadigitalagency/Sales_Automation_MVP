@@ -167,7 +167,77 @@ def scrape_website(base_url, playwright_browser):
     try:
         # 1. Priority Scan
         print("  -> Checking priority pages...")
-        priority_paths = ['/contact', '/contact-us', '/about-us', '/about', '/about-me']
+        priority_paths = [
+            # Core
+            '/contact', '/contact-us', '/about-us', '/about', '/about-me', '/team', '/company',
+            
+            # Index file variants
+            '/contact/index.html', '/about/index.html', '/team/index.html', '/company/index.html',
+            '/contact/index.php', '/about/index.php', '/team/index.php', '/company/index.php',
+            
+            # HTML direct
+            '/contact.html', '/contact-us.html', '/about.html', '/about-us.html',
+            '/team.html', '/company.html', '/team-us.html',
+            
+            # Support / Help sections
+            '/support', '/support/contact', '/support/help', '/help', '/help/contact',
+            '/customer-service', '/customer-service/contact',
+            
+            # People directories
+            '/staff', '/staff-directory', '/employee-directory', '/directory',
+            '/our-people', '/people', '/people/index.html',
+            '/key-people', '/leadership-team', '/executive-team',
+            
+            # Media / PR
+            '/press', '/press/contact', '/media', '/media/contact',
+            '/newsroom', '/newsroom/contact',
+            
+            # Careers / HR
+            '/careers', '/jobs', '/work-with-us', '/join-us',
+            '/hr', '/hr/contact', '/recruitment',
+            
+            # Nested company info
+            '/company-info', '/company-info.html', '/company-profile',
+            '/company-profile.html', '/about/company',
+            
+            # General reach-out
+            '/get-in-touch', '/reach-us', '/connect', '/connect-with-us',
+            
+            # Localized (Spanish)
+            '/contacto', '/contactenos', '/quienes-somos', '/empresa', '/sobre-nosotros',
+            
+            # Localized (German)
+            '/kontakt', '/ueber-uns', '/unternehmen',
+            
+            # Localized (Portuguese)
+            '/contato', '/fale-conosco', '/sobre', '/empresa',
+            
+            # Localized (French)
+            '/contactez-nous', '/a-propos', '/notre-equipe', '/societe',
+            
+            # Localized (Italian)
+            '/contatti', '/chi-siamo', '/la-nostra-storia',
+            
+            # Nested language dirs
+            '/en/contact', '/en/about', '/en/team', '/en/company',
+            '/es/contacto', '/es/nosotros', '/es/empresa',
+            '/pt/contato', '/pt/sobre', '/pt/empresa',
+            '/fr/contact', '/fr/a-propos', '/fr/equipe',
+            '/de/kontakt', '/de/unternehmen', '/de/team',
+            
+            # Misc info pages
+            '/info', '/information', '/company-information',
+            '/site-info', '/legal', '/impressum', '/disclaimer',
+            
+            # Investor / relations
+            '/investors', '/investors/contact', '/ir', '/ir/contact',
+            
+            # Privacy / compliance
+            '/privacy', '/privacy-policy/contact', '/gdpr-contact',
+            
+            # Partnerships / vendors
+            '/partners', '/partners/contact', '/vendors', '/vendors/contact']
+
         priority_urls = {urljoin(base_url, path) for path in priority_paths}
         priority_urls.add(base_url)
 
