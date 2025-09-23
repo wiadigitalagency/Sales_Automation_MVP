@@ -443,35 +443,3 @@ def parse_autoresponse_email(email_text_content):
         print(f"  -> Found potential contact email(s) in autoresponse: {list(set(emails))}")
 
     return list(set(emails))
-
-def get_priority_pages(html_content, base_url):
-    """
-    Parses HTML to find links that likely lead to contact, about, or team pages.
-    """
-    from urllib.parse import urljoin, urlparse
-    soup = BeautifulSoup(html_content, 'lxml')
-    priority_links = set()
-    keywords = [
-        'contact', 'about', 'team', 'career', 'jobs', 'support', 'help',
-        'press', 'media', 'news', 'impressum', 'legal', 'privacy',
-        'contact-us', 'about-us', 'our-team', 'get-in-touch',
-        'contacto', 'quienes-somos', 'equipo', 'carrera',
-        'kontakt', 'ueber-uns', 'über-uns',
-        'contato', 'sobre',
-        'contactez-nous', 'a-propos', 'equipe'
-    ]
-
-    for a_tag in soup.find_all('a', href=True):
-        href = a_tag.get('href', '').lower()
-        link_text = a_tag.get_text().lower()
-
-        if any(keyword in href for keyword in keywords) or any(keyword in link_text for keyword in keywords):
-            try:
-                full_url = urljoin(base_url, a_tag['href'])
-                # Basic validation to ensure it's a real link and clean fragment
-                if urlparse(full_url).scheme in ['http', 'https']:
-                    priority_links.add(full_url.split('#')[0])
-            except ValueError:
-                continue # Ignore malformed hrefs
-
-    return list(priority_links)

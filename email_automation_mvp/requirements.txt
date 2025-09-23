@@ -7,5 +7,7 @@ pdfminer.six
 python-docx
 python-pptx
 spacy
-python -m spacy download en_core_web_sm
 easyocr
+torch
+torchvision
+opencv-python-headless
