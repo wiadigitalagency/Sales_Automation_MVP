@@ -1,21 +1,18 @@
 """
 This module contains functions for looking up WHOIS information for a domain.
-It uses a Screenshot + OCR approach with the easyocr library to bypass
-anti-scraping measures.
+It uses a Screenshot + OCR approach with the EasyOCR library.
 """
 import re
 import os
 import easyocr
 from playwright.sync_api import Error as PlaywrightError
+import logging
 
-# Initialize the OCR reader once to avoid loading the model repeatedly.
-# This makes the process much more efficient when called multiple times.
-print("Initializing EasyOCR reader...")
-OCR_READER = easyocr.Reader(['en'])
-print("EasyOCR reader initialized.")
+# Suppress verbose logging from libraries to keep output clean
+logging.getLogger('easyocr').setLevel(logging.ERROR)
+logging.getLogger('playwright').setLevel(logging.WARNING)
 
-
-def parse_ocr_text(full_text):
+def parse_whois_ocr(full_text):
     """
     Parses the raw text from OCR to find contact information using a robust block-based logic.
     """
@@ -64,7 +61,7 @@ def parse_ocr_text(full_text):
         if email_match:
             raw_email = email_match.group(0)
             cleaned_email = raw_email.replace(' ', '')
-
+            
             if '@' in cleaned_email:
                 local_part, domain_part = cleaned_email.split('@', 1)
                 if '.' not in domain_part:
@@ -77,71 +74,74 @@ def parse_ocr_text(full_text):
                         email = cleaned_email
                 else:
                     email = cleaned_email
-
+        
         # --- Add Contact if valid ---
         if email and name and name != "Unknown":
             # Filter out organizational names
             if not any(org_word in name for org_word in ['University', 'Computing', 'Center']):
                  if not any(c['email'] == email for c in contacts):
                     contacts.append({'name': name, 'email': email, 'source': 'WHOIS (OCR)'})
-
+    
     return contacts
 
 def get_whois_data(domain, browser):
     """
-    Scrapes WHOIS information by taking a screenshot and using OCR.
+    Scrapes WHOIS information by taking a screenshot and using EasyOCR.
     """
-    print(f"  -> Performing WHOIS lookup for {domain} (Screenshot + OCR)...")
-
+    print(f"  -> Performing WHOIS lookup for {domain} (Screenshot + EasyOCR)...")
+    found_contacts = []
     url = f"https://www.whois.com/whois/{domain}"
-    # Using /tmp for temporary screenshot file
     screenshot_path = f"/tmp/whois_screenshot_{domain}.png"
-
+    
     page = None
     try:
         page = browser.new_page()
         page.set_viewport_size({"width": 1280, "height": 1080})
         page.goto(url, timeout=30000, wait_until='networkidle')
-
-        # Find the element containing the WHOIS data
-        # First, try the <pre> tag used for .edu domains
-        whois_data_element = page.query_selector("pre.df-raw")
-        if not whois_data_element:
-             # Fallback for the standard div-based layout
-             whois_data_element = page.query_selector("div.whois-data")
-
-        if whois_data_element:
+        
+        # More robust selector for WHOIS data element
+        whois_data_element = page.locator("pre.df-raw, div.df-block-raw").first
+        
+        if whois_data_element.is_visible():
             whois_data_element.screenshot(path=screenshot_path)
             print(f"  -> Screenshot of WHOIS data saved to {screenshot_path}")
 
-            # Use EasyOCR to extract text from the screenshot
-            print("  -> Performing OCR on the screenshot...")
-            ocr_results = OCR_READER.readtext(screenshot_path)
-            # The result is a list of (bbox, text, prob). We join the text parts.
-            ocr_text = "\n".join([result[1] for result in ocr_results])
-            print("  -> OCR complete.")
+            reader = easyocr.Reader(['en'])
+            ocr_result = reader.readtext(screenshot_path)
+            ocr_text = "\n".join([text for (bbox, text, prob) in ocr_result])
+            
+            print("---- START of EasyOCR Text ----")
+            print(ocr_text)
+            print("---- END of EasyOCR Text ----")
 
-            # Clean up the screenshot file
-            if os.path.exists(screenshot_path):
-                os.remove(screenshot_path)
-
-            return parse_ocr_text(ocr_text)
+            found_contacts = parse_whois_ocr(ocr_text)
+            
         else:
             print("  -> Could not find WHOIS data element on the page.")
-            return []
 
     except PlaywrightError as e:
         print(f"  -> WHOIS lookup failed for {domain} with Playwright. Error: {e}")
-        return []
     except Exception as e:
         print(f"  -> An unexpected error occurred during WHOIS lookup: {e}")
-        return []
     finally:
         if page:
             page.close()
-        # Final cleanup of screenshot file in case of error
         if os.path.exists(screenshot_path):
             try:
                 os.remove(screenshot_path)
             except OSError as e:
                 print(f"  -> Error removing screenshot file: {e}")
+        
+    unique_contacts = []
+    seen_emails = set()
+    for contact in found_contacts:
+        if contact['email'] not in seen_emails:
+            unique_contacts.append(contact)
+            seen_emails.add(contact['email'])
+
+    if unique_contacts:
+        print(f"  -> Found {len(unique_contacts)} contact(s) from WHOIS.")
+    else:
+        print("  -> No contacts found from WHOIS.")
+        
+    return unique_contacts
