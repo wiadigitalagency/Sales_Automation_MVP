@@ -6,8 +6,9 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from collections import deque
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
-from file_processor import process_file_url
-from page_analyzer import analyze_page_content
+from .file_processor import process_file_url
+from .page_analyzer import analyze_page_content
+from .whois_lookup import get_whois_data
 
 # --- Configuration ---
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -202,6 +203,13 @@ def scrape_website(base_url, playwright_browser):
     original_domain = urlparse(base_url).netloc
     print(f"Scraping: {base_url} (Domain: {original_domain})")
 
+    # --- WHOIS Lookup ---
+    lookup_domain = original_domain
+    if lookup_domain.startswith('www.'):
+        lookup_domain = lookup_domain[4:]
+    whois_data = get_whois_data(lookup_domain, playwright_browser)
+
+
     # --- Mode Detection ---
     print("  -> Checking site type (Simple vs JavaScript-heavy)...")
     use_playwright = False
@@ -227,7 +235,7 @@ def scrape_website(base_url, playwright_browser):
         use_playwright = True
 
     # --- Start Crawl ---
-    found_data = []
+    found_data = list(whois_data)
     visited_urls = set()
     pages_crawled = 0
     processed_file_urls = set()
