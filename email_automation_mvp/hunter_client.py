@@ -16,7 +16,7 @@ def get_hunter_contacts(domain, api_key):
     params = {
         'domain': domain,
         'api_key': api_key,
-        'limit': 100  # Fetch up to 100 emails to get a comprehensive list for ranking
+        'limit': 10  # Fetch up to 10 emails, the maximum for free accounts
     }
     try:
         response = requests.get(url, params=params)
