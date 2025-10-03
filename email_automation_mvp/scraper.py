@@ -6,10 +6,13 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from collections import deque
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
+from dotenv import load_dotenv
 from file_processor import process_file_url
 from page_analyzer import analyze_page_content
+from hunter_client import get_hunter_contacts
 
 # --- Configuration ---
+load_dotenv()
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 URL_FILE = os.path.join(SCRIPT_DIR, 'urls.txt')
 OUTPUT_FILE = os.path.join(SCRIPT_DIR, 'results.csv')
@@ -455,5 +458,97 @@ def main():
     else:
         print("\nScraping complete. No data to save.")
 
+def enrich_emails_with_hunter(input_file, enriched_output_file):
+    """
+    Uses domains from an input file to find and rank contacts from Hunter.io.
+    Writes the top 10 ranked contacts per domain to a new output file.
+    """
+    api_key = os.getenv("HUNTER_API_KEY")
+    if not api_key:
+        print("Warning: HUNTER_API_KEY environment variable not set. Skipping Hunter.io enrichment.")
+        return
+
+    # Define a ranking system for job titles. Lower score is better.
+    priority_titles = {
+        # Tier 1: Founders
+        "founder": 1, "co-founder": 1, "cofounder": 1,
+        # Tier 2: C-Suite
+        "ceo": 2, "chief executive officer": 2,
+        "cto": 3, "chief technology officer": 3,
+        "coo": 4, "chief operating officer": 4,
+        "cfo": 5, "chief financial officer": 5,
+        "cio": 6, "chief information officer": 6,
+        "cmo": 7, "chief marketing officer": 7,
+        "cso": 8, "chief strategy officer": 8,
+        # Tier 3: VP / Head
+        "vp": 9, "vice president": 9,
+        "head of": 10,
+        # Tier 4: Director
+        "director": 11,
+        # Tier 5: Manager
+        "manager": 12
+    }
+
+    def get_contact_rank(position):
+        if not position:
+            return 999
+        position_lower = position.lower()
+        for title, rank in priority_titles.items():
+            if title in position_lower:
+                return rank
+        return 99
+
+    try:
+        df = pd.read_csv(input_file)
+        if df.empty:
+            print("Input file is empty. Nothing to enrich.")
+            return
+
+        top_contacts_per_domain = []
+        unique_websites = df['Website'].unique()
+        print(f"\n--- Starting Hunter.io Enrichment for {len(unique_websites)} unique domains ---")
+
+        for domain in unique_websites:
+            print(f"  -> Searching for contacts at: {domain}")
+            hunter_contacts = get_hunter_contacts(domain, api_key)
+
+            if hunter_contacts:
+                for contact in hunter_contacts:
+                    contact['rank'] = get_contact_rank(contact.get('position'))
+
+                ranked_contacts = sorted(hunter_contacts, key=lambda x: (x['rank'], x.get('name', '')))
+
+                top_10_contacts = ranked_contacts[:10]
+                print(f"  -> Found {len(hunter_contacts)} contacts. Selected top {len(top_10_contacts)} after ranking.")
+
+                for contact in top_10_contacts:
+                    top_contacts_per_domain.append({
+                        'Website': domain,
+                        'Found_Email': contact['email'],
+                        'Found_Name': contact['name'],
+                        'Position': contact.get('position', ''),
+                        'Source_URL': 'Hunter.io'
+                    })
+            else:
+                print(f"  -> No contacts found for {domain}.")
+
+        if top_contacts_per_domain:
+            enriched_df = pd.DataFrame(top_contacts_per_domain)
+            columns = ['Website', 'Found_Name', 'Position', 'Found_Email', 'Source_URL']
+            enriched_df = enriched_df[columns]
+            enriched_df.to_csv(enriched_output_file, index=False)
+            print(f"\nEnrichment complete. Top {len(enriched_df)} ranked contacts saved in '{enriched_output_file}'.")
+        else:
+            print("\nEnrichment complete. No new contacts were found to save.")
+
+    except FileNotFoundError:
+        print(f"Error: Input file '{input_file}' not found for enrichment.")
+    except Exception as e:
+        print(f"An error occurred during the enrichment process: {e}")
+
+
 if __name__ == "__main__":
     main()
+    # After scraping, run the enrichment process on the output file
+    enriched_file = os.path.join(SCRIPT_DIR, 'results_enriched.csv')
+    enrich_emails_with_hunter(OUTPUT_FILE, enriched_file)
