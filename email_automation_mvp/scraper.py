@@ -6,10 +6,13 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from collections import deque
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
+from dotenv import load_dotenv
 from file_processor import process_file_url
 from page_analyzer import analyze_page_content
+from hunter_client import get_decision_maker_emails
 
 # --- Configuration ---
+load_dotenv()
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 URL_FILE = os.path.join(SCRIPT_DIR, 'urls.txt')
 OUTPUT_FILE = os.path.join(SCRIPT_DIR, 'results.csv')
@@ -455,5 +458,58 @@ def main():
     else:
         print("\nScraping complete. No data to save.")
 
+def enrich_emails_with_hunter(input_file, output_file):
+    """
+    Enriches the scraped email list with decision-maker emails from Hunter.io.
+    """
+    api_key = os.getenv("HUNTER_API_KEY")
+    if not api_key:
+        print("Warning: HUNTER_API_KEY environment variable not set. Skipping Hunter.io enrichment.")
+        return
+
+    try:
+        df = pd.read_csv(input_file)
+        if df.empty:
+            print("Input file is empty. Nothing to enrich.")
+            return
+
+        unique_websites = df['Website'].unique()
+        print(f"\n--- Starting Hunter.io Enrichment for {len(unique_websites)} unique domains ---")
+
+        new_emails_data = []
+        for domain in unique_websites:
+            print(f"  -> Searching for decision-makers at: {domain}")
+            hunter_emails = get_decision_maker_emails(domain, api_key)
+            if hunter_emails:
+                print(f"  -> Found {len(hunter_emails)} decision-maker emails.")
+                for email in hunter_emails:
+                    new_emails_data.append({
+                        'Website': domain,
+                        'Found_Email': email,
+                        'Found_Name': '',  # Hunter doesn't always provide names
+                        'Source_URL': 'Hunter.io'
+                    })
+            else:
+                print("  -> No decision-maker emails found.")
+
+        if new_emails_data:
+            new_emails_df = pd.DataFrame(new_emails_data)
+            # Append new emails to the original DataFrame
+            combined_df = pd.concat([df, new_emails_df], ignore_index=True)
+            # Remove duplicates again, keeping the first occurrence
+            combined_df.drop_duplicates(subset=['Website', 'Found_Email'], inplace=True)
+            combined_df.to_csv(output_file, index=False)
+            print(f"\nEnrichment complete. Appended {len(new_emails_df)} new emails. Final results in '{output_file}'.")
+        else:
+            print("\nEnrichment complete. No new emails were added.")
+
+    except FileNotFoundError:
+        print(f"Error: Input file '{input_file}' not found for enrichment.")
+    except Exception as e:
+        print(f"An error occurred during the enrichment process: {e}")
+
+
 if __name__ == "__main__":
     main()
+    # After scraping, run the enrichment process
+    enrich_emails_with_hunter(OUTPUT_FILE, OUTPUT_FILE)
