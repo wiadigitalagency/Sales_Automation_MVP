@@ -7,16 +7,13 @@ from urllib.parse import urljoin, urlparse
 from collections import deque
 from playwright.sync_api import sync_playwright, Error as PlaywrightError
 from dotenv import load_dotenv
-from file_processor import process_file_url
-from page_analyzer import analyze_page_content
-from hunter_client import get_hunter_contacts
-from api_key_manager import ApiKeyManager
+from .file_processor import process_file_url
+from .page_analyzer import analyze_page_content
+from ..utils.hunter_client import get_hunter_contacts
+from ..utils.api_key_manager import ApiKeyManager
 
 # --- Configuration ---
 load_dotenv()
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-URL_FILE = os.path.join(SCRIPT_DIR, 'urls.txt')
-OUTPUT_FILE = os.path.join(SCRIPT_DIR, 'results.csv')
 MAX_PAGES_PER_DOMAIN = 100
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
@@ -395,16 +392,16 @@ def scrape_website(base_url, playwright_browser):
 
     return found_data
 
-def main():
-    if not os.path.exists(URL_FILE):
-        print(f"Error: Input file '{URL_FILE}' not found.")
+def main(url_file, output_file, enriched_output_file):
+    if not os.path.exists(url_file):
+        print(f"Error: Input file '{url_file}' not found.")
         return
 
-    with open(URL_FILE, 'r') as f:
+    with open(url_file, 'r') as f:
         urls = [line.strip() for line in f if line.strip()]
 
     if not urls:
-        print(f"Error: Input file '{URL_FILE}' is empty.")
+        print(f"Error: Input file '{url_file}' is empty.")
         return
 
     print(f"Found {len(urls)} base URLs to process.")
@@ -454,10 +451,13 @@ def main():
         df.drop(columns=['name_len'], inplace=True)
 
         df.drop_duplicates(subset=['Website', 'Found_Email'], inplace=True)
-        df.to_csv(OUTPUT_FILE, index=False)
-        print(f"\nScraping complete. Results saved to '{OUTPUT_FILE}'.")
+        df.to_csv(output_file, index=False)
+        print(f"\nScraping complete. Results saved to '{output_file}'.")
     else:
         print("\nScraping complete. No data to save.")
+
+    # After scraping, run the enrichment process on the output file
+    enrich_emails_with_hunter(output_file, enriched_output_file)
 
 def enrich_emails_with_hunter(input_file, enriched_output_file):
     """
@@ -536,8 +536,3 @@ def enrich_emails_with_hunter(input_file, enriched_output_file):
         print(f"An error occurred during the enrichment process: {e}")
 
 
-if __name__ == "__main__":
-    main()
-    # After scraping, run the enrichment process on the output file
-    enriched_file = os.path.join(SCRIPT_DIR, 'results_enriched.csv')
-    enrich_emails_with_hunter(OUTPUT_FILE, enriched_file)

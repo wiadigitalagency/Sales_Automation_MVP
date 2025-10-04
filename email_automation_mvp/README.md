@@ -1,52 +1,83 @@
 # Email Automation MVP
 
-This project is a Minimum Viable Product (MVP) for a simple email automation tool. It consists of two Python scripts: one for scraping websites to find email addresses and another for sending a templated email to the found addresses.
+This project is a simple yet powerful email automation tool. It scrapes websites for contact information, enriches the data using the Hunter.io API, and sends personalized emails.
 
 ## Features
 
-- **Email Scraper**: Reads a list of websites, visits their contact/about pages, and extracts any email addresses it finds.
-- **Email Sender**: Reads the list of scraped emails and sends a personalized email to each one.
+- **Modular Scraper**: Crawls websites from a provided list to find email addresses, names, and contact details from text, files, and obfuscated sources.
+- **Hunter.io Enrichment**: Uses the Hunter.io API to find senior-level contacts for each domain, prioritizing titles like "Founder" and "CEO".
+- **Templated Email Sender**: Sends personalized emails using a template, automatically substituting the target's website name.
+- **Professional Structure**: The code is organized into a scalable structure, separating logic (`src`), input data (`data`), and output files (`results`).
 
-This MVP does **not** include AI personalization, automatic follow-ups, or advanced analytics.
+## Project Structure
+
+The project is organized into the following directories:
+
+-   `src/`: Contains all the Python source code.
+    -   `scraper/`: The website scraping and data extraction logic.
+    -   `sender/`: The email sending logic.
+    -   `utils/`: Shared utilities like the Hunter.io client and API key manager.
+-   `data/`: Contains input files for the application.
+    -   `urls.txt`: A list of websites to scrape.
+    -   `email_template.txt`: The template for the emails you want to send.
+-   `results/`: Contains the output CSV files.
+    -   `results.csv`: The initial list of emails found by the scraper.
+    -   `results_enriched.csv`: The top-ranked contacts found via Hunter.io.
+-   `main.py`: The main entry point to run the application.
 
 ## Setup
 
-1.  **Clone the repository** or download the files into a directory.
-2.  **Install dependencies**: Make sure you have Python 3 installed. Open your terminal or command prompt, navigate to the project directory, and run:
+1.  **Clone the Repository**:
+    ```bash
+    git clone <repository_url>
+    cd email_automation_mvp
+    ```
+
+2.  **Install Dependencies**: Make sure you have Python 3 installed.
     ```bash
     pip install -r requirements.txt
     ```
+    You may also need to download the spaCy language model:
+    ```bash
+    python -m spacy download en_core_web_sm
+    ```
+
+3.  **Configure API Keys**:
+    -   Create a file named `.env` in the root directory of the project.
+    -   Add your Hunter.io API keys to this file. You can include multiple keys, separated by commas.
+    ```env
+    HUNTER_API_KEYS=key1,key2,key3
+    ```
+    If you don't provide any keys, the enrichment step will be skipped.
 
 ## How to Use
 
-The process is two steps: first you run the scraper, then you run the sender.
+The entire workflow is managed by the `main.py` script.
 
-### Step 1: Scrape for Emails
+1.  **Add Target Websites**: Open `data/urls.txt` and add the websites you want to scrape, one URL per line.
+    ```
+    example.com
+    another-example.com
+    ```
 
-1.  **Edit `urls.txt`**: Open the `urls.txt` file and add the websites you want to scrape, with one URL per line. For example:
+2.  **Customize Your Email**: Open `data/email_template.txt` to define the subject and body of your email. Use the placeholder `[WebsiteName]` for personalization.
     ```
-    google.com
-    github.com
+    Subject: A question about [WebsiteName]
+
+    Hello,
+
+    I was browsing [WebsiteName] and had a quick question...
     ```
-2.  **Run the scraper**: Navigate to the project directory in your terminal and run the script:
+
+3.  **Run the Application**:
     ```bash
-    python scraper.py
+    python main.py
     ```
-3.  **Check the output**: The script will print its progress. Once finished, it will create a `results.csv` file containing the websites and the emails it found.
 
-### Step 2: Send the Emails
+The script will execute the following steps automatically:
+-   **Scrape Websites**: It will crawl the URLs, save the initial findings to `results/results.csv`, and then use Hunter.io to find more contacts, saving them to `results/results_enriched.csv`.
+-   **Send Emails**: It will then prompt you for your Gmail credentials and send emails based on the contents of `results.csv`.
 
-1.  **Review `results.csv`**: It's a good idea to open `results.csv` to see which emails were found. The sender script will only email the valid addresses it finds.
-2.  **Edit `email_template.txt`**: Modify the `email_template.txt` file with the content you want to send. You can change the subject and the body. Use the placeholder `[WebsiteName]` in the body, and the script will automatically replace it with the corresponding website URL for personalization.
-3.  **Run the sender**: In your terminal, run the sender script:
-    ```bash
-    python sender.py
-    ```
-4.  **Enter your credentials**: The script will prompt you for your Gmail address and password.
+    > **Important**: If you have 2-Step Verification enabled on your Gmail account, you will need to generate an **App Password** and use that instead of your regular password.
 
-    > **Important**: If you have 2-Step Verification enabled on your Gmail account, you will need to generate an **App Password** and use that instead of your regular password. You can find instructions on how to do this in your Google Account settings.
-
-5.  **Monitor the process**: The script will log into your account and send the emails one by one, with a 30-second delay between each to avoid being flagged as spam. It will print a confirmation message after each email is sent.
-
----
-This completes the functionality of the MVP. You can now customize the input files and run the scripts to automate your email outreach.
+4.  **Review the Results**: Check the `results/` folder to see the data that was collected.

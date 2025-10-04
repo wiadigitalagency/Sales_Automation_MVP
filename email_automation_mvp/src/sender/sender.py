@@ -7,24 +7,21 @@ import getpass
 from email.message import EmailMessage
 
 # --- Configuration ---
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_FILE = os.path.join(SCRIPT_DIR, 'results.csv')
-TEMPLATE_FILE = os.path.join(SCRIPT_DIR, 'email_template.txt')
 DELAY_SECONDS = 30
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465  # For SSL
 
-def main():
+def main(csv_file, template_file):
     """
     Main function to run the email sender.
     Reads scraped emails, personalizes a template, and sends the emails.
     """
     # --- 1. Check for necessary files ---
-    if not os.path.exists(CSV_FILE):
-        print(f"Error: Input file '{CSV_FILE}' not found. Please run the scraper first.")
+    if not os.path.exists(csv_file):
+        print(f"Error: Input file '{csv_file}' not found. Please run the scraper first.")
         return
-    if not os.path.exists(TEMPLATE_FILE):
-        print(f"Error: Email template file '{TEMPLATE_FILE}' not found.")
+    if not os.path.exists(template_file):
+        print(f"Error: Email template file '{template_file}' not found.")
         return
 
     # --- 2. Get User Credentials ---
@@ -32,7 +29,7 @@ def main():
     password = getpass.getpass("Enter your Gmail password (or App Password): ")
 
     # --- 3. Read Template and Data ---
-    with open(TEMPLATE_FILE, 'r') as f:
+    with open(template_file, 'r') as f:
         template_content = f.read()
 
     # Extract subject from the template
@@ -49,7 +46,7 @@ def main():
         body_template = template_content
 
 
-    df = pd.read_csv(CSV_FILE)
+    df = pd.read_csv(csv_file)
     # Filter out entries with no valid email
     df.dropna(subset=['Found_Email'], inplace=True)
     df = df[df['Found_Email'] != 'No email found']
@@ -102,5 +99,3 @@ def main():
 
     print("\nEmail sending process finished.")
 
-if __name__ == "__main__":
-    main()
