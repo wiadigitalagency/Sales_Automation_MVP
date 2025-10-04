@@ -47,7 +47,7 @@ def download_file(url, save_folder="downloaded_files"):
         print(f"  -> Successfully downloaded: {filename}")
         return filepath
     except requests.exceptions.RequestException as e:
-        print(f"  -> Failed to download {url}. Error: {e}")
+        print(f"  -> ERROR: Failed to download file from {url}. Reason: {e}")
         return None
 
 def extract_text_from_file(filepath):
@@ -94,7 +94,7 @@ def extract_text_from_file(filepath):
         return text[:100000] # spaCy's limit is 1,000,000 characters
 
     except Exception as e:
-        print(f"  -> Failed to extract text from {filename}. Error: {e}")
+        print(f"  -> ERROR: Failed to extract text from {os.path.basename(filepath)}. Reason: {e}")
         return None
     finally:
         # Clean up the downloaded file after processing
@@ -139,22 +139,31 @@ def process_file_url(url):
     """
     High-level function to orchestrate the downloading, text extraction,
     and information finding from a file URL.
+    Wrapped in a try-except block to prevent a single file from crashing the scraper.
     """
-    print(f"  -> Processing document link: {url}")
-    filepath = download_file(url)
-    if not filepath:
+    try:
+        print(f"  -> Processing document link: {url}")
+        filepath = download_file(url)
+        if not filepath:
+            return [], []
+
+        # The file is deleted inside extract_text_from_file, so get the name for logging now.
+        filename_for_logging = os.path.basename(filepath)
+
+        text = extract_text_from_file(filepath)
+        if not text:
+            return [], []  # File is cleaned up in extract_text_from_file
+
+        emails = find_emails_in_text(text)
+        names = find_names_in_text(text)
+
+        if emails:
+            print(f"  -> Found {len(emails)} email(s) in {filename_for_logging}")
+        if names:
+            print(f"  -> Found {len(names)} potential name(s) in {filename_for_logging}")
+
+        return emails, names
+    except Exception as e:
+        # This is a safety net. More specific errors are handled in the functions below.
+        print(f"  -> CRITICAL: An unexpected error occurred while processing file URL {url}. Error: {e}. Skipping file.")
         return [], []
-
-    text = extract_text_from_file(filepath)
-    if not text:
-        return [], []
-
-    emails = find_emails_in_text(text)
-    names = find_names_in_text(text)
-
-    if emails:
-        print(f"  -> Found {len(emails)} email(s) in {os.path.basename(filepath)}")
-    if names:
-        print(f"  -> Found {len(names)} potential name(s) in {os.path.basename(filepath)}")
-
-    return emails, names

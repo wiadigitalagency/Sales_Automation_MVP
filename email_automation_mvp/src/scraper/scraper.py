@@ -161,9 +161,9 @@ def get_sitemap_urls(base_url, session=None, browser=None):
                         sitemap_urls.add(loc.text.strip())
 
         except (requests.RequestException, PlaywrightError) as e:
-            print(f"  -> Failed to fetch or parse sitemap {sitemap_url}: {e}")
+            print(f"  -> ERROR: Failed to fetch or parse sitemap {sitemap_url}. Reason: {e}")
         except Exception as e:
-            print(f"  -> An unexpected error occurred while parsing {sitemap_url}: {e}")
+            print(f"  -> CRITICAL: An unexpected error occurred while parsing {sitemap_url}. Reason: {e}")
 
     print(f"  -> Found {len(sitemap_urls)} URLs in sitemap(s).")
     return list(sitemap_urls)
@@ -224,7 +224,10 @@ def scrape_website(base_url, playwright_browser):
             else:
                 print("  -> Simple site detected. Using fast mode.")
     except requests.RequestException as e:
-        print(f"  -> Initial check failed: {e}. Assuming advanced site.")
+        print(f"  -> Initial check failed: {e}. Assuming advanced site and continuing with Playwright.")
+        use_playwright = True
+    except Exception as e:
+        print(f"  -> CRITICAL: An unexpected error occurred during mode detection: {e}. Assuming advanced site.")
         use_playwright = True
 
     # --- Start Crawl ---
@@ -307,7 +310,9 @@ def scrape_website(base_url, playwright_browser):
                         processed_file_urls.add(file_url)
 
             except (requests.RequestException, PlaywrightError) as e:
-                print(f"   -> Could not access {url}. Error: {e}")
+                print(f"   -> ERROR: Could not access priority page {url}. Reason: {e}")
+            except Exception as e:
+                print(f"   -> CRITICAL: An unexpected error occurred on priority page {url}. Reason: {e}")
 
         # 2. Conditional continuation
         # Check for emails before continuing to full crawl
@@ -382,7 +387,9 @@ def scrape_website(base_url, playwright_browser):
                             urls_to_visit.append(link)
 
             except (requests.RequestException, PlaywrightError) as e:
-                print(f"   -> Could not access {current_url}. Error: {e}")
+                print(f"   -> ERROR: Could not access page {current_url}. Reason: {e}")
+            except Exception as e:
+                print(f"   -> CRITICAL: An unexpected error occurred on page {current_url}. Reason: {e}")
 
     finally:
         if page:
